@@ -167,103 +167,135 @@ test("resolveBall rejects out-of-range positions", () => {
   assert.throws(() => e2e.resolveBall(grid, "0"));
 });
 
+function envCtx(overrides = {}) {
+  return {
+    roomCode: ROOM_CODE,
+    fieldId: 3,
+    kind: e2e.KIND_VALUE,
+    from: e2e.PARTY_VISITOR,
+    v: e2e.PROTOCOL_VERSION,
+    seq: 1,
+    ...overrides,
+  };
+}
+
 test("encrypt/decrypt roundtrip recovers plaintext", async () => {
   const { aliceKey, bobKey } = await deriveBothSides();
-  const envelope = await e2e.encryptValue(
-    aliceKey,
-    "Alice Smith",
-    ROOM_CODE,
-    3,
-    1,
-    1,
-  );
-  const recovered = await e2e.decryptValue(bobKey, envelope, ROOM_CODE, 3);
+  const envelope = await e2e.encryptEnvelope(aliceKey, "Alice Smith", envCtx());
+  const recovered = await e2e.decryptEnvelope(bobKey, envelope, {
+    roomCode: ROOM_CODE,
+  });
   assert.equal(recovered, "Alice Smith");
 });
 
 test("encrypt with unicode plaintext roundtrips", async () => {
   const { aliceKey, bobKey } = await deriveBothSides();
-  const envelope = await e2e.encryptValue(
+  const envelope = await e2e.encryptEnvelope(
     aliceKey,
     "naïve café — 日本語 🚀",
-    ROOM_CODE,
-    1,
-    1,
-    1,
+    envCtx({ fieldId: 1 }),
   );
-  const recovered = await e2e.decryptValue(bobKey, envelope, ROOM_CODE, 1);
+  const recovered = await e2e.decryptEnvelope(bobKey, envelope, {
+    roomCode: ROOM_CODE,
+  });
   assert.equal(recovered, "naïve café — 日本語 🚀");
 });
 
-test("envelope contains v, seq, nonce, ct, tag as base64 strings", async () => {
+test("label envelopes roundtrip just like value envelopes", async () => {
+  const { aliceKey, bobKey } = await deriveBothSides();
+  const envelope = await e2e.encryptEnvelope(
+    aliceKey,
+    "Social Security Number",
+    envCtx({ kind: e2e.KIND_LABEL, from: e2e.PARTY_OPERATOR, fieldId: 5 }),
+  );
+  assert.equal(envelope.kind, "label");
+  assert.equal(envelope.from, "operator");
+  const recovered = await e2e.decryptEnvelope(bobKey, envelope, {
+    roomCode: ROOM_CODE,
+  });
+  assert.equal(recovered, "Social Security Number");
+});
+
+test("envelope exposes kind, from, fieldId + crypto material", async () => {
   const { aliceKey } = await deriveBothSides();
-  const env = await e2e.encryptValue(aliceKey, "hi", ROOM_CODE, 1, 1, 7);
-  assert.equal(env.v, 1);
+  const env = await e2e.encryptEnvelope(
+    aliceKey,
+    "hi",
+    envCtx({ fieldId: 1, seq: 7 }),
+  );
+  assert.equal(env.v, 2);
   assert.equal(env.seq, 7);
+  assert.equal(env.kind, "value");
+  assert.equal(env.from, "visitor");
+  assert.equal(env.fieldId, 1);
   assert.equal(typeof env.nonce, "string");
   assert.equal(typeof env.ct, "string");
   assert.equal(typeof env.tag, "string");
-  // base64 nonce decodes to 12 bytes, tag to 16
   assert.equal(Buffer.from(env.nonce, "base64").length, 12);
   assert.equal(Buffer.from(env.tag, "base64").length, 16);
 });
 
 test("decrypt fails when room code differs (AAD mismatch)", async () => {
   const { aliceKey, bobKey } = await deriveBothSides();
-  const envelope = await e2e.encryptValue(
-    aliceKey,
-    "secret",
-    ROOM_CODE,
-    1,
-    1,
-    1,
-  );
+  const envelope = await e2e.encryptEnvelope(aliceKey, "secret", envCtx());
   await assert.rejects(() =>
-    e2e.decryptValue(bobKey, envelope, "999999999", 1),
+    e2e.decryptEnvelope(bobKey, envelope, { roomCode: "999999999" }),
   );
 });
 
-test("decrypt fails when field id differs (AAD mismatch)", async () => {
+test("decrypt fails when fieldId is tampered in envelope", async () => {
   const { aliceKey, bobKey } = await deriveBothSides();
-  const envelope = await e2e.encryptValue(
+  const envelope = await e2e.encryptEnvelope(aliceKey, "secret", envCtx());
+  const tampered = { ...envelope, fieldId: 999 };
+  await assert.rejects(() =>
+    e2e.decryptEnvelope(bobKey, tampered, { roomCode: ROOM_CODE }),
+  );
+});
+
+test("decrypt fails when a label envelope is reclassified as a value", async () => {
+  const { aliceKey, bobKey } = await deriveBothSides();
+  const envelope = await e2e.encryptEnvelope(
     aliceKey,
     "secret",
-    ROOM_CODE,
-    1,
-    1,
-    1,
+    envCtx({ kind: e2e.KIND_LABEL, from: e2e.PARTY_OPERATOR }),
   );
-  await assert.rejects(() => e2e.decryptValue(bobKey, envelope, ROOM_CODE, 2));
+  const tampered = { ...envelope, kind: "value" };
+  await assert.rejects(() =>
+    e2e.decryptEnvelope(bobKey, tampered, { roomCode: ROOM_CODE }),
+  );
+});
+
+test("decrypt fails when 'from' party is tampered (impersonation)", async () => {
+  const { aliceKey, bobKey } = await deriveBothSides();
+  const envelope = await e2e.encryptEnvelope(
+    aliceKey,
+    "secret",
+    envCtx({ from: e2e.PARTY_OPERATOR }),
+  );
+  const tampered = { ...envelope, from: "visitor" };
+  await assert.rejects(() =>
+    e2e.decryptEnvelope(bobKey, tampered, { roomCode: ROOM_CODE }),
+  );
 });
 
 test("decrypt fails when seq is tampered in envelope", async () => {
   const { aliceKey, bobKey } = await deriveBothSides();
-  const envelope = await e2e.encryptValue(
-    aliceKey,
-    "secret",
-    ROOM_CODE,
-    1,
-    1,
-    1,
-  );
+  const envelope = await e2e.encryptEnvelope(aliceKey, "secret", envCtx());
   const tampered = { ...envelope, seq: 2 };
-  await assert.rejects(() => e2e.decryptValue(bobKey, tampered, ROOM_CODE, 1));
+  await assert.rejects(() =>
+    e2e.decryptEnvelope(bobKey, tampered, { roomCode: ROOM_CODE }),
+  );
 });
 
 test("decrypt fails when ciphertext is tampered", async () => {
   const { aliceKey, bobKey } = await deriveBothSides();
-  const envelope = await e2e.encryptValue(
-    aliceKey,
-    "secret",
-    ROOM_CODE,
-    1,
-    1,
-    1,
-  );
+  const envelope = await e2e.encryptEnvelope(aliceKey, "secret", envCtx());
   const ctBytes = Buffer.from(envelope.ct, "base64");
   ctBytes[0] ^= 0x01;
   const tampered = { ...envelope, ct: ctBytes.toString("base64") };
-  await assert.rejects(() => e2e.decryptValue(bobKey, tampered, ROOM_CODE, 1));
+  await assert.rejects(() =>
+    e2e.decryptEnvelope(bobKey, tampered, { roomCode: ROOM_CODE }),
+  );
 });
 
 test("decrypt fails when session keys differ (simulated MITM)", async () => {
@@ -289,17 +321,19 @@ test("decrypt fails when session keys differ (simulated MITM)", async () => {
     ROOM_CODE,
   );
 
-  const envelope = await e2e.encryptValue(
-    aliceKey,
-    "secret",
-    ROOM_CODE,
-    1,
-    1,
-    1,
+  const envelope = await e2e.encryptEnvelope(aliceKey, "secret", envCtx());
+  await assert.rejects(() =>
+    e2e.decryptEnvelope(bobKey, envelope, { roomCode: ROOM_CODE }),
   );
-  await assert.rejects(() => e2e.decryptValue(bobKey, envelope, ROOM_CODE, 1));
 });
 
-test("PROTOCOL_VERSION is 1", () => {
-  assert.equal(e2e.PROTOCOL_VERSION, 1);
+test("PROTOCOL_VERSION is 2", () => {
+  assert.equal(e2e.PROTOCOL_VERSION, 2);
+});
+
+test("kind and party constants are stable strings", () => {
+  assert.equal(e2e.KIND_VALUE, "value");
+  assert.equal(e2e.KIND_LABEL, "label");
+  assert.equal(e2e.PARTY_OPERATOR, "operator");
+  assert.equal(e2e.PARTY_VISITOR, "visitor");
 });

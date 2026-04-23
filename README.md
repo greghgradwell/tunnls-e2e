@@ -13,7 +13,7 @@ A tunnls session is a real-time link between an **operator** and a **visitor**. 
 - **Key agreement:** ECDH on P-256
 - **Key derivation:** HKDF-SHA256, 32-byte session key
 - **Symmetric cipher:** AES-256-GCM, 96-bit random nonces
-- **AAD:** `"{roomCode}:{fieldId}:{v}:{seq}"` binds ciphertext to its session, field, protocol version, and monotonic sequence
+- **AAD:** `"{roomCode}:{fieldId}:{kind}:{from}:{v}:{seq}"` binds ciphertext to its session, field, kind (`value` or `label`), sending party (`operator` or `visitor`), protocol version, and monotonic sequence — so an envelope replayed across fields, reclassified as a different kind, or spoofed as if from the other party fails to decrypt
 - **MITM detection:** both parties derive a deterministic 25-ball bingo-style grid from the session key. Visitor picks N balls freely, operator resolves the positions through its own grid, and the parties compare ball names over a trusted out-of-band channel (phone). If a MITM is tampering with key exchange, the grids diverge and the ball names don't match.
 
 ## API
@@ -40,11 +40,19 @@ e2e.resolveBall(grid, 0);  // => "B1"   (row 0, col 0)
 e2e.resolveBall(grid, 7);  // => "N32"  (row 1, col 2)
 e2e.resolveBall(grid, 24); // => "O65"  (row 4, col 4)
 
-// Field value encryption
-const envelope = await e2e.encryptValue(sessKey, "Alice", roomCode, fieldId, v, seq);
-// envelope = { v, seq, nonce, ct, tag } — all base64
+// Envelope encryption — handles both field values and labels, in either direction.
+const envelope = await e2e.encryptEnvelope(sessKey, "Alice", {
+  roomCode,
+  fieldId,
+  kind: e2e.KIND_VALUE,        // or e2e.KIND_LABEL
+  from: e2e.PARTY_VISITOR,     // or e2e.PARTY_OPERATOR
+  v: e2e.PROTOCOL_VERSION,
+  seq,
+});
+// envelope = { v, seq, kind, from, fieldId, nonce, ct, tag }
+// (nonce/ct/tag are base64; the others are integrity-bound via AAD)
 
-const plaintext = await e2e.decryptValue(sessKey, envelope, roomCode, fieldId);
+const plaintext = await e2e.decryptEnvelope(sessKey, envelope, { roomCode });
 ```
 
 ## Running tests
@@ -59,7 +67,7 @@ node --test assets/vendor/tunnls-e2e/test/
 
 - **Not a defense against targeted JS tampering.** This module is served by the tunnls server. A malicious server could serve different JS to different users. Defending against that requires Subresource Integrity + browser-side verification we don't have yet.
 - **No forward secrecy across sessions.** Each session generates a fresh keypair in memory and discards it when the session ends. There's no long-term identity to compromise, but there's also no cross-session FS beyond that.
-- **Labels are not encrypted.** Operators configure field labels from server-stored templates; the server must know them by design. Only field *values* are E2E.
+- **Coarse field type is not encrypted.** Each field has a `text | phone | email | date` category that the visitor's device uses to pick the right input keyboard / formatting. This category travels plaintext alongside the encrypted label and value envelopes. Setting everything to `text` drops this category entirely if you don't want the server to see it.
 
 ## License
 

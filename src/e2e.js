@@ -1,4 +1,9 @@
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
+
+export const KIND_VALUE = "value";
+export const KIND_LABEL = "label";
+export const PARTY_OPERATOR = "operator";
+export const PARTY_VISITOR = "visitor";
 
 const COLUMNS = ["B", "I", "N", "G", "O"];
 const BALLS_PER_COLUMN = 5;
@@ -102,13 +107,10 @@ export function resolveBall(grid, position) {
   return `${letter}${grid[letter][row]}`;
 }
 
-export async function encryptValue(
+export async function encryptEnvelope(
   sessionKey,
   plaintext,
-  roomCode,
-  fieldId,
-  v,
-  seq,
+  { roomCode, fieldId, kind, from, v, seq },
 ) {
   const aesKey = await crypto.subtle.importKey(
     "raw",
@@ -118,12 +120,14 @@ export async function encryptValue(
     ["encrypt"],
   );
   const nonce = crypto.getRandomValues(new Uint8Array(12));
-  // AAD binds ciphertext to its session / field / protocol version / seq.
-  // Callers must ensure roomCode and fieldId do not contain ":" — the
-  // current tunnls RoomCode generator emits only digits, and fieldId is an
-  // integer, so the delimiter is unambiguous. If that ever changes, switch
-  // to a length-prefixed encoding.
-  const aad = new TextEncoder().encode(`${roomCode}:${fieldId}:${v}:${seq}`);
+  // AAD binds ciphertext to session / field / kind (value|label) / sending
+  // party / protocol version / seq. Namespacing by kind+from prevents a
+  // label envelope from being replayed as a value, and prevents one party's
+  // envelope being accepted as if it came from the other.
+  // Callers must ensure roomCode/fieldId/kind/from do not contain ":".
+  const aad = new TextEncoder().encode(
+    `${roomCode}:${fieldId}:${kind}:${from}:${v}:${seq}`,
+  );
   const pt = new TextEncoder().encode(plaintext);
 
   const ctWithTag = new Uint8Array(
@@ -139,14 +143,17 @@ export async function encryptValue(
   return {
     v,
     seq,
+    kind,
+    from,
+    fieldId,
     nonce: toBase64(nonce),
     ct: toBase64(ct),
     tag: toBase64(tag),
   };
 }
 
-export async function decryptValue(sessionKey, envelope, roomCode, fieldId) {
-  const { v, seq, nonce, ct, tag } = envelope;
+export async function decryptEnvelope(sessionKey, envelope, { roomCode }) {
+  const { v, seq, kind, from, fieldId, nonce, ct, tag } = envelope;
   const aesKey = await crypto.subtle.importKey(
     "raw",
     sessionKey,
@@ -162,7 +169,9 @@ export async function decryptValue(sessionKey, envelope, roomCode, fieldId) {
   ctWithTag.set(ctBytes, 0);
   ctWithTag.set(tagBytes, ctBytes.length);
 
-  const aad = new TextEncoder().encode(`${roomCode}:${fieldId}:${v}:${seq}`);
+  const aad = new TextEncoder().encode(
+    `${roomCode}:${fieldId}:${kind}:${from}:${v}:${seq}`,
+  );
   const pt = await crypto.subtle.decrypt(
     { name: "AES-GCM", iv: nonceBytes, additionalData: aad, tagLength: 128 },
     aesKey,

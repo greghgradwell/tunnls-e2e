@@ -66,7 +66,7 @@ node --test assets/vendor/tunnls-e2e/test/
 ## Limitations
 
 - **Not a defense against targeted JS tampering.** This module is served by the tunnls server. A malicious server could serve different JS to different users. Defending against that requires Subresource Integrity + browser-side verification we don't have yet.
-- **No forward secrecy across sessions.** Each session generates a fresh keypair in memory and discards it when the session ends. There's no long-term identity to compromise, but there's also no cross-session FS beyond that.
+- **No forward secrecy across sessions.** Each session generates a fresh ECDH keypair in memory (the private key is never exported) and discards it when the session ends. Note that consuming applications may cache the *derived* session key in browser storage so that a page reload doesn't force a re-handshake — this library doesn't do that, but it also doesn't prevent it. If you care about derived-key lifetime, audit your consumer. No long-term identity or cross-session keying material exists on either side.
 - **Coarse field type is not encrypted.** Each field has a `text | phone | email | date` category that the visitor's device uses to pick the right input keyboard / formatting. This category travels plaintext alongside the encrypted label and value envelopes. Setting everything to `text` drops this category entirely if you don't want the server to see it.
 
 ## License
